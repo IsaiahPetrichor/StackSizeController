@@ -1,3 +1,4 @@
+#pragma warning disable IDE0305
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -21,6 +22,7 @@ namespace Oxide.Plugins
 
         private Configuration _config;
         private Dictionary<string, int> _vanillaDefaults;
+        private Dictionary<string, int> _originalStackableCache; // Cache of original stackable values before any modifications
 
         private readonly List<string> _ignoreList = new List<string>
         {
@@ -40,6 +42,13 @@ namespace Oxide.Plugins
                 Log("Generating Default Config File.");
 
                 LoadDefaultConfig();
+            }
+
+            // Cache original stackable values before any modifications are made
+            _originalStackableCache = new Dictionary<string, int>();
+            foreach (ItemDefinition item in ItemManager.GetItemDefinitions())
+            {
+                _originalStackableCache[item.shortname] = item.stackable;
             }
 
             DownloadVanillaDefaults();
@@ -140,67 +149,27 @@ namespace Oxide.Plugins
 
         private void UpdateIndividualItemStackMultiplier(int itemId, float multiplier)
         {
-            if (_config.IndividualItemStackMultipliers.ContainsKey(itemId.ToString()))
-            {
-                _config.IndividualItemStackMultipliers[itemId.ToString()] = multiplier;
-
-                SaveConfig();
-
-                return;
-            }
-
-            _config.IndividualItemStackMultipliers.Add(ItemManager.itemDictionary[itemId].shortname, multiplier);
-
+            string shortname = ItemManager.itemDictionary[itemId].shortname;
+            _config.IndividualItemStackMultipliers[shortname] = multiplier;
             SaveConfig();
         }
 
         private void UpdateIndividualItemStackMultiplier(string shortname, float multiplier)
         {
-            if (_config.IndividualItemStackMultipliers.ContainsKey(shortname))
-            {
-                _config.IndividualItemStackMultipliers[shortname] = multiplier;
-
-                SaveConfig();
-
-                return;
-            }
-
-            _config.IndividualItemStackMultipliers.Add(shortname, multiplier);
-
+            _config.IndividualItemStackMultipliers[shortname] = multiplier;
             SaveConfig();
         }
 
         private void UpdateIndividualItemStackSize(int itemId, int stackLimit)
         {
             ItemDefinition item = ItemManager.FindItemDefinition(itemId);
-
-            if (_config.IndividualItemStackSize.ContainsKey(item.shortname))
-            {
-                _config.IndividualItemStackSize[item.shortname] = stackLimit;
-
-                SaveConfig();
-
-                return;
-            }
-
-            _config.IndividualItemStackSize.Add(item.shortname, stackLimit);
-
+            _config.IndividualItemStackSize[item.shortname] = stackLimit;
             SaveConfig();
         }
 
         private void UpdateIndividualItemStackSize(string shortname, int stackLimit)
         {
-            if (_config.IndividualItemStackSize.ContainsKey(shortname))
-            {
-                _config.IndividualItemStackSize[shortname] = stackLimit;
-
-                SaveConfig();
-
-                return;
-            }
-
-            _config.IndividualItemStackSize.Add(shortname, stackLimit);
-
+            _config.IndividualItemStackSize[shortname] = stackLimit;
             SaveConfig();
         }
 
@@ -431,31 +400,94 @@ namespace Oxide.Plugins
 
         private void ListCategoryItemsCommand(IPlayer player, string command, string[] args)
         {
-            if (args.Length != 1)
+            if (args.Length < 1)
             {
                 player.Reply(string.Format(GetMessage("NotEnoughArguments", player.Id), 1));
+                return;
             }
 
-            ItemCategory itemCategory = (ItemCategory)Enum.Parse(typeof(ItemCategory), args[0]);
+            ItemCategory itemCategory = (ItemCategory)Enum.Parse(typeof(ItemCategory), args[0], true);
+            int page = 1;
+
+            // Parse optional page argument
+            if (args.Length >= 2 && int.TryParse(args[1], out int parsedPage))
+            {
+                page = parsedPage;
+            }
+
+            // Filter items by category
+            List<ItemDefinition> categoryItems = ItemManager.GetItemDefinitions()
+                .Where(itemDefinition => itemDefinition.category == itemCategory)
+                .ToList();
+
+            if (categoryItems.Count == 0)
+            {
+                player.Reply($"No items found in category '{itemCategory}'");
+                return;
+            }
+
+            // Pagination settings
+            const int itemsPerPage = 40;
+            int totalPages = (int)Math.Ceiling(categoryItems.Count / (float)itemsPerPage);
+
+            // Validate page number
+            if (page < 1 || page > totalPages)
+            {
+                player.Reply($"Invalid page number. Please use 1-{totalPages}");
+                return;
+            }
+
+            // Get items for current page
+            List<ItemDefinition> pageItems = categoryItems
+                .Skip((page - 1) * itemsPerPage)
+                .Take(itemsPerPage)
+                .ToList();
 
             TextTable output = new TextTable();
             output.AddColumns("Unique Id", "Shortname", "Category", "Vanilla Stack", "Custom Stack", "Multiplier");
 
-            foreach (ItemDefinition itemDefinition in ItemManager.GetItemDefinitions()
-                .Where(itemDefinition => itemDefinition.category == itemCategory))
+            foreach (ItemDefinition itemDefinition in pageItems)
             {
                 int vanillaStackSize = GetVanillaStackSize(itemDefinition);
-                float categoryMultiplier = _config.CategoryStackMultipliers.ContainsKey(itemDefinition.category.ToString())
-                    ? _config.CategoryStackMultipliers[itemDefinition.category.ToString()]
-                    : 1f;
+
+                // Determine the actual multiplier being applied to this item
+                float appliedMultiplier = 1f;
+
+                // Check for individual item multiplier (by shortname)
+                if (_config.IndividualItemStackMultipliers.ContainsKey(itemDefinition.shortname))
+                {
+                    appliedMultiplier = _config.IndividualItemStackMultipliers[itemDefinition.shortname];
+                }
+                // Check for individual item multiplier (by item id)
+                else if (_config.IndividualItemStackMultipliers.ContainsKey(itemDefinition.itemid.ToString()))
+                {
+                    appliedMultiplier = _config.IndividualItemStackMultipliers[itemDefinition.itemid.ToString()];
+                }
+                // Check for category multiplier
+                else if (_config.CategoryStackMultipliers.ContainsKey(itemDefinition.category.ToString()))
+                {
+                    appliedMultiplier = _config.CategoryStackMultipliers[itemDefinition.category.ToString()];
+                }
+                // Fall back to global multiplier
+                else
+                {
+                    appliedMultiplier = _config.GlobalStackMultiplier;
+                }
 
                 output.AddRow(itemDefinition.itemid.ToString(), itemDefinition.shortname,
                     itemDefinition.category.ToString(), vanillaStackSize.ToString("N0"),
                     Mathf.Clamp(GetStackSize(itemDefinition), 0, int.MaxValue).ToString("N0"),
-                    categoryMultiplier.ToString());
+                    appliedMultiplier.ToString());
             }
 
+            // Build footer with pagination info
+            string pageInfo = $"Page {page}/{totalPages} ({categoryItems.Count} total items)";
+            string hint = totalPages > 1
+                ? $"\nUse: /{command} {args[0]} [page#]"
+                : "";
+
             player.Reply(output.ToString());
+            player.Reply(pageInfo + hint);
         }
 
         #endregion
@@ -527,9 +559,21 @@ namespace Oxide.Plugins
 
         private int GetVanillaStackSize(ItemDefinition itemDefinition)
         {
-            return _vanillaDefaults.ContainsKey(itemDefinition.shortname)
-                ? _vanillaDefaults[itemDefinition.shortname]
-                : itemDefinition.stackable;
+            // Always use _vanillaDefaults if available to ensure we get the true vanilla value
+            // and not a modified value that's been set by SetStackSizes()
+            if (_vanillaDefaults != null && _vanillaDefaults.ContainsKey(itemDefinition.shortname))
+            {
+                return _vanillaDefaults[itemDefinition.shortname];
+            }
+
+            // Fall back to cached original stackable value from plugin initialization
+            if (_originalStackableCache != null && _originalStackableCache.ContainsKey(itemDefinition.shortname))
+            {
+                return _originalStackableCache[itemDefinition.shortname];
+            }
+
+            // Last resort - return current value (may be modified)
+            return itemDefinition.stackable;
         }
 
         private int GetStackSize(int itemId)
@@ -627,3 +671,4 @@ namespace Oxide.Plugins
         #endregion
     }
 }
+#pragma warning restore IDE0305
