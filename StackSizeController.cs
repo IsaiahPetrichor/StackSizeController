@@ -10,7 +10,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Stack Size Controller", "AnExiledDev/patched by chrome", "4.1.3")]
+    [Info("Stack Size Controller", "AnExiledDev/patched by chrome", "4.1.4")]
     [Description("Allows configuration of most items max stack size.")]
     class StackSizeController : CovalencePlugin
     {
